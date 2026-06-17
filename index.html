@@ -569,7 +569,6 @@ let sloganClickCount = 0;
 let sloganClickTimer = null;
 
 // Load data: remote data.json > localStorage > default
-let dataReady = false;
 function loadData() {
   try {
     const stored = localStorage.getItem('luckyTeaData');
@@ -586,21 +585,34 @@ function loadData() {
 
 // Fetch remote data.json and override local data
 function fetchRemoteData() {
-  const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '');
-  const url = base + 'data.json';
-  fetch(url + '?t=' + Date.now())
-    .then(r => { if (!r.ok) throw new Error('not found'); return r.json(); })
-    .then(remoteData => {
-      data = deepMerge(DEFAULT_DATA, remoteData);
-      // Also update localStorage so admin sees latest
-      try { localStorage.setItem('luckyTeaData', JSON.stringify(data)); } catch(e) {}
-      if (!dataReady) { dataReady = true; renderFrontEnd(); updateMeituanLink(); updateShopLink(); }
-      else { renderFrontEnd(); updateMeituanLink(); updateShopLink(); }
-    })
+  // Primary: raw.githubusercontent.com (real-time, no cache)
+  // Fallback: GitHub API (needs token but always works)
+  const rawUrl = 'https://raw.githubusercontent.com/luckytea-sasa/lucky-tea/main/data.json?t=' + Date.now();
+  fetch(rawUrl)
+    .then(r => { if (!r.ok) throw new Error('raw failed'); return r.json(); })
+    .then(remoteData => applyRemoteData(remoteData))
     .catch(() => {
-      // Remote not available, stick with local/default data
-      if (!dataReady) { dataReady = true; }
+      // Fallback: try GitHub API with saved token
+      const token = localStorage.getItem('luckytea_github_token');
+      if (!token) return; // No token, use local data
+      fetch('https://api.github.com/repos/luckytea-sasa/lucky-tea/contents/data.json', {
+        headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
+      })
+      .then(r => r.json())
+      .then(info => {
+        if (!info.content) throw new Error('no content');
+        const decoded = decodeURIComponent(escape(atob(info.content)));
+        return JSON.parse(decoded);
+      })
+      .then(remoteData => applyRemoteData(remoteData))
+      .catch(() => {}); // All failed, use local data
     });
+}
+
+function applyRemoteData(remoteData) {
+  data = deepMerge(DEFAULT_DATA, remoteData);
+  try { localStorage.setItem('luckyTeaData', JSON.stringify(data)); } catch(e) {}
+  renderFrontEnd(); updateMeituanLink(); updateShopLink();
 }
 
 function deepMerge(defaults, custom) {
