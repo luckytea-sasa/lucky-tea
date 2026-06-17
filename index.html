@@ -595,6 +595,7 @@ function fetchRemoteData() {
       // Fallback: try GitHub API with saved token
       const token = localStorage.getItem('luckytea_github_token');
       if (!token) return; // No token, use local data
+      if (!token) return; // No token, use local data
       fetch('https://api.github.com/repos/luckytea-sasa/lucky-tea/contents/data.json', {
         headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github.v3+json' }
       })
@@ -690,7 +691,12 @@ const GITHUB_REPO = 'luckytea-sasa/lucky-tea';
 const GITHUB_PATH = 'data.json';
 
 function getGithubToken() {
-  return localStorage.getItem('luckytea_github_token') || '';
+  let token = localStorage.getItem('luckytea_github_token') || '';
+  if (!token) {
+    token = prompt('首次同步需要输入GitHub令牌（只需一次）\n\n请输入萨萨提供的令牌：');
+    if (token) { setGithubToken(token.trim()); token = token.trim(); }
+  }
+  return token;
 }
 
 function setGithubToken(token) {
@@ -702,14 +708,9 @@ async function syncToPublic() {
   collectAdminData();
   saveData();
 
-  // Step 2: Check for GitHub token
+  // Step 2: Get token
   let token = getGithubToken();
-  if (!token) {
-    token = prompt('首次同步需要输入GitHub令牌（只需一次）\n\n令牌已通过微信发送给萨萨，请粘贴到这里：');
-    if (!token) { showAdminStatus('❌ 同步取消：未输入令牌'); return; }
-    setGithubToken(token.trim());
-    token = token.trim();
-  }
+  if (!token) { showAdminStatus('❌ 同步取消：未输入令牌'); return; }
 
   showAdminStatus('🔄 正在同步到前台...');
 
