@@ -219,6 +219,7 @@
   .a-btn-primary { background: var(--green-deep); color: #fff; }
   .a-btn-secondary { background: var(--cream); color: var(--text-dark); border: 1px solid var(--cream-dark); }
   .a-btn-success { background: #27ae60; color: #fff; }
+  .a-btn-warn { background: #e67e22; color: #fff; }
   .admin-body { padding: 16px; }
   .a-section {
     background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px;
@@ -375,6 +376,7 @@
     <div class="admin-top-title">管理后台</div>
     <div class="admin-top-actions">
       <button class="a-btn a-btn-success" onclick="saveAllData()">保存</button>
+      <button class="a-btn a-btn-warn" onclick="syncToPublic()">🚀 同步到前台</button>
       <button class="a-btn a-btn-primary" onclick="exportData()">📥 导出配置</button>
       <button class="a-btn a-btn-secondary" onclick="closeAdmin()">返回前台</button>
     </div>
@@ -566,13 +568,13 @@ let data = {
 let sloganClickCount = 0;
 let sloganClickTimer = null;
 
-// Load data: localStorage first, then default
+// Load data: remote data.json > localStorage > default
+let dataReady = false;
 function loadData() {
   try {
     const stored = localStorage.getItem('luckyTeaData');
     if (stored) {
       data = JSON.parse(stored);
-      // Merge with defaults for any missing fields
       data = deepMerge(DEFAULT_DATA, data);
     } else {
       data = JSON.parse(JSON.stringify(DEFAULT_DATA));
@@ -580,6 +582,25 @@ function loadData() {
   } catch(e) {
     data = JSON.parse(JSON.stringify(DEFAULT_DATA));
   }
+}
+
+// Fetch remote data.json and override local data
+function fetchRemoteData() {
+  const base = window.location.origin + window.location.pathname.replace(/[^/]*$/, '');
+  const url = base + 'data.json';
+  fetch(url + '?t=' + Date.now())
+    .then(r => { if (!r.ok) throw new Error('not found'); return r.json(); })
+    .then(remoteData => {
+      data = deepMerge(DEFAULT_DATA, remoteData);
+      // Also update localStorage so admin sees latest
+      try { localStorage.setItem('luckyTeaData', JSON.stringify(data)); } catch(e) {}
+      if (!dataReady) { dataReady = true; renderFrontEnd(); updateMeituanLink(); updateShopLink(); }
+      else { renderFrontEnd(); updateMeituanLink(); updateShopLink(); }
+    })
+    .catch(() => {
+      // Remote not available, stick with local/default data
+      if (!dataReady) { dataReady = true; }
+    });
 }
 
 function deepMerge(defaults, custom) {
@@ -650,6 +671,98 @@ function exportData() {
   a.click();
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
   showAdminStatus('配置文件已下载，请发给小二更新前台');
+}
+
+// === 同步到前台功能 ===
+const GITHUB_REPO = 'luckytea-sasa/lucky-tea';
+const GITHUB_PATH = 'data.json';
+
+function getGithubToken() {
+  return localStorage.getItem('luckytea_github_token') || '';
+}
+
+function setGithubToken(token) {
+  localStorage.setItem('luckytea_github_token', token);
+}
+
+async function syncToPublic() {
+  // Step 1: Ensure we have the latest data
+  collectAdminData();
+  saveData();
+
+  // Step 2: Check for GitHub token
+  let token = getGithubToken();
+  if (!token) {
+    token = prompt('首次同步需要输入GitHub令牌（只需一次）\n\n令牌已通过微信发送给萨萨，请粘贴到这里：');
+    if (!token) { showAdminStatus('❌ 同步取消：未输入令牌'); return; }
+    setGithubToken(token.trim());
+    token = token.trim();
+  }
+
+  showAdminStatus('🔄 正在同步到前台...');
+
+  try {
+    // Step 3: Get current file SHA (required by GitHub API for updates)
+    const getResp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_PATH}`, {
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' }
+    });
+
+    let sha = null;
+    if (getResp.ok) {
+      const fileInfo = await getResp.json();
+      sha = fileInfo.sha;
+    } else if (getResp.status !== 404) {
+      // Token might be invalid
+      if (getResp.status === 401 || getResp.status === 403) {
+        localStorage.removeItem('luckytea_github_token');
+        showAdminStatus('❌ 令牌无效，请重新同步输入新令牌');
+        return;
+      }
+    }
+
+    // Step 4: Prepare data for upload (strip base64 images to keep file small)
+    const syncData = JSON.parse(JSON.stringify(data));
+    // Remove base64 images - they are too large for frequent sync
+    // Images will stay in the HTML defaults; only text/config changes sync
+    function stripBase64(obj) {
+      for (const key in obj) {
+        if (typeof obj[key] === 'string' && obj[key].startsWith('data:image/') && obj[key].length > 1000) {
+          obj[key] = ''; // Clear large base64, keep field
+        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+          stripBase64(obj[key]);
+        }
+      }
+    }
+    stripBase64(syncData);
+
+    const content = btoa(unescape(encodeURIComponent(JSON.stringify(syncData, null, 2))));
+    const body = {
+      message: `更新配置 ${new Date().toLocaleString('zh-CN')}`,
+      content: content,
+      committer: { name: '萨萨', email: 'luckytea-sasa@users.noreply.github.com' }
+    };
+    if (sha) body.sha = sha;
+
+    // Step 5: Push to GitHub
+    const putResp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/contents/${GITHUB_PATH}`, {
+      method: 'PUT',
+      headers: { 'Authorization': `token ${token}`, 'Accept': 'application/vnd.github.v3+json' },
+      body: JSON.stringify(body)
+    });
+
+    if (putResp.ok) {
+      showAdminStatus('✅ 同步成功！约1分钟后前台自动更新');
+    } else if (putResp.status === 401 || putResp.status === 403) {
+      localStorage.removeItem('luckytea_github_token');
+      const errData = await putResp.json().catch(() => ({}));
+      showAdminStatus('❌ 令牌无效或已过期，请重新同步');
+    } else {
+      const errData = await putResp.json().catch(() => ({}));
+      showAdminStatus('❌ 同步失败：' + (errData.message || '未知错误'));
+    }
+  } catch (e) {
+    showAdminStatus('❌ 网络错误：' + e.message);
+  }
 }
 
 function showAdminStatus(msg) {
@@ -1040,8 +1153,9 @@ loadData();
 renderFrontEnd();
 updateMeituanLink();
 updateShopLink();
-updateShopLink();
 checkAdminParam();
+// Then fetch remote data.json to get latest public version
+fetchRemoteData();
 </script>
 </body>
 </html>
